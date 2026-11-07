@@ -293,14 +293,26 @@ router.post('/picks', async (req, res) => {
       body
     })
 
+    const resText = await uploadRes.text()
+    let uploadData = null
+    try {
+      uploadData = JSON.parse(resText)
+    } catch {
+      // resText was not JSON
+    }
+
     if (!uploadRes.ok) {
-      const errText = await uploadRes.text()
       return res.status(uploadRes.status).json({
-        error: `Walrus storage upload failed on Mainnet (${uploadRes.status}): ${errText}`
+        error: uploadData?.message || uploadData?.error || resText || `HTTP ${uploadRes.status}`
       })
     }
 
-    const uploadData = await uploadRes.json()
+    if (!uploadData) {
+      return res.status(502).json({
+        error: `Invalid response from Walrus storage service: ${resText}`
+      })
+    }
+
     walrusBlobId = uploadData.blobId
     walrusJobId = uploadData.jobId
   } catch (storageErr) {

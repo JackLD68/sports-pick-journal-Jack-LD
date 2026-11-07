@@ -83,11 +83,20 @@ export default function App() {
   const [formSuccess, setFormSuccess] = useState(false)
   const [formError, setFormError] = useState('')
 
-  const fetchPicksAndPatterns = async () => {
+  const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
+  const fetchPicksAndPatterns = async (attempt = 1): Promise<void> => {
     try {
       const res = await fetch('/api/tatum/picks')
-      if (res.ok) {
-        const data = await res.json()
+      const text = await res.text()
+      let data: any = null
+      try {
+        data = JSON.parse(text)
+      } catch {
+        // text is not valid JSON
+      }
+
+      if (res.ok && data) {
         setPicks(data.picks || [])
         setInsights(data.insights || [])
         setStats(data.stats || { total: 0, settled: 0, wins: 0, overallWinRate: 0 })
@@ -95,19 +104,40 @@ export default function App() {
           ...prev,
           configured: Boolean(data.walrusConfigured)
         }))
+        setLoading(false)
+        return
       }
-    } catch (e) {
-      console.error('Failed to fetch picks from Walrus Memory', e)
-    } finally {
-      setLoading(false)
+
+      const errorMessage = data?.error || data?.message || text || `Server error (${res.status})`
+      if (attempt < 3) {
+        await wait(3000)
+        return fetchPicksAndPatterns(attempt + 1)
+      } else {
+        setFormError(errorMessage)
+        setLoading(false)
+      }
+    } catch (e: any) {
+      if (attempt < 3) {
+        await wait(3000)
+        return fetchPicksAndPatterns(attempt + 1)
+      } else {
+        setFormError(e.message || 'Failed to connect to server when loading picks.')
+        setLoading(false)
+      }
     }
   }
 
   const fetchStatus = async () => {
     try {
       const res = await fetch('/api/tatum/status')
-      if (res.ok) {
-        const data = await res.json()
+      const text = await res.text()
+      let data: any = null
+      try {
+        data = JSON.parse(text)
+      } catch {
+        // Not JSON
+      }
+      if (res.ok && data) {
         if (data.status === 'connected') {
           setLatestBlock(data.latestBlock)
           setSyncStatus(`Tatum RPC Block #${data.latestBlock}`)
@@ -133,15 +163,7 @@ export default function App() {
     fetchStatus()
   }, [])
 
-  const handleCreatePick = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!game.trim() || !pick.trim() || !why.trim()) {
-      setFormError('Please fill in game matchup, pick, and your rationale.')
-      return
-    }
-
-    setSaving(true)
-    setFormError('')
+  const submitPickWithRetry = async (attempt = 1): Promise<void> => {
     try {
       const res = await fetch('/api/tatum/picks', {
         method: 'POST',
@@ -156,8 +178,15 @@ export default function App() {
         })
       })
 
-      const data = await res.json()
-      if (res.ok) {
+      const rawText = await res.text()
+      let data: any = null
+      try {
+        data = JSON.parse(rawText)
+      } catch {
+        // rawText is plain text, e.g. "upstream request timeout", 502 Bad Gateway HTML, etc.
+      }
+
+      if (res.ok && data && data.success) {
         setFormSuccess(true)
         setGame('')
         setPick('')
@@ -165,14 +194,40 @@ export default function App() {
         setConfidence(8)
         fetchPicksAndPatterns()
         setTimeout(() => setFormSuccess(false), 3000)
+        setSaving(false)
+        return
+      }
+
+      const failureMessage = data?.error || data?.message || rawText || `HTTP ${res.status}`
+      if (attempt < 3) {
+        await wait(3000)
+        return submitPickWithRetry(attempt + 1)
       } else {
-        setFormError(data.error || 'Failed to save pick to Walrus Memory.')
+        setFormError(failureMessage)
+        setSaving(false)
       }
     } catch (err: any) {
-      setFormError(err.message || 'Network communication error with Walrus.')
-    } finally {
-      setSaving(false)
+      if (attempt < 3) {
+        await wait(3000)
+        return submitPickWithRetry(attempt + 1)
+      } else {
+        setFormError(err.message || 'Network communication failure with Walrus storage.')
+        setSaving(false)
+      }
     }
+  }
+
+  const handleCreatePick = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (saving) return
+    if (!game.trim() || !pick.trim() || !why.trim()) {
+      setFormError('Please fill in game matchup, pick, and your rationale.')
+      return
+    }
+
+    setSaving(true)
+    setFormError('')
+    await submitPickWithRetry(1)
   }
 
   const handleUpdateStatus = async (id: string, newStatus: 'won' | 'lost' | 'pending') => {
@@ -448,7 +503,7 @@ export default function App() {
                 className="w-full inline-flex items-center justify-center gap-sm rounded-lg border border-transparent bg-brand-solid px-lg py-sm text-sm font-semibold text-primary-on-brand shadow-xs hover:bg-brand-solid-hover focus-visible:ring-2 focus-visible:ring-focus-ring disabled:opacity-50"
               >
                 <Brain className="size-4 shrink-0 text-fg-white" aria-hidden="true" />
-                {saving ? 'Storing in Walrus Memory...' : 'Store Pick in Walrus Memory'}
+                {saving ? 'Saving...' : 'Store Pick in Walrus Memory'}
               </button>
             </form>
           </section>
